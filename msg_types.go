@@ -164,11 +164,16 @@ type LsInitializeParams struct {
 // RequestID is the id of a request/response
 type RequestID int
 
+// IsDefined implements easyjson.Optional which handles the omitempty logic.
+func (r *RequestID) IsDefined() bool {
+	return *r >= 0
+}
+
 // JSONRPCHeader is used to identify a message.
 type JSONRPCHeader struct {
 	JSONRPC string              `json:"jsonrpc"` // Should be "2.0"
 	Method  string              `json:"method"`  // ie, "textDocument/codeLens"
-	ID      RequestID           `json:"id"`
+	ID      RequestID           `json:"id,omitempty"`
 	Params  easyjson.RawMessage `json:"params"`
 }
 

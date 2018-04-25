@@ -908,7 +908,7 @@ func easyjsonC38a4abEncodeGithubComJacobdufaultLspc10(out *jwriter.Writer, in JS
 		}
 		out.String(string(in.Method))
 	}
-	{
+	if (in.ID).IsDefined() {
 		const prefix string = ",\"id\":"
 		if first {
 			first = false
