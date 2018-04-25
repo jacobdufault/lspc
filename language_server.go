@@ -31,6 +31,8 @@ import (
 // If this ever blocks the daemon may deadlock.
 var languageServerClosed = make(chan *languageServer, 1000)
 
+type responseHandler func(json easyjson.RawMessage)
+
 type languageServer struct {
 	cmd *exec.Cmd
 
@@ -38,7 +40,7 @@ type languageServer struct {
 	// language server instance to send a message to.
 	directory     string
 	nextRequestID RequestID
-	onReply       map[RequestID]func(json easyjson.RawMessage)
+	onResponse    map[RequestID]responseHandler
 
 	err error
 
@@ -54,8 +56,8 @@ func startLanguageServer(bin, directory string, initOpts easyjson.RawMessage) (*
 	}
 
 	ls := languageServer{
-		directory: directory,
-		onReply:   make(map[RequestID]func(json easyjson.RawMessage)),
+		directory:  directory,
+		onResponse: make(map[RequestID]responseHandler),
 	}
 
 	// Start the binary.
@@ -88,29 +90,37 @@ func startLanguageServer(bin, directory string, initOpts easyjson.RawMessage) (*
 	return &ls, nil
 }
 
-func (l *languageServer) writeMsgWithReply(method string, params easyjson.RawMessage) {
-	content := JSONRPCHeader{
-		JSONRPC: "2.0",
-		ID:      l.nextRequestID,
-		Method:  method,
-		Params:  params,
-	}
+// Write a request, which will have an associated response.
+func (l *languageServer) writeRequest(method string, params easyjson.RawMessage, onResponse responseHandler) {
+
+	id := l.nextRequestID
 	l.nextRequestID++
 
-	if _, e := marshalToWriter(content, l.stdin); e != nil {
-		l.err = e
-		languageServerClosed <- l
+	// Use a dummy handler if the user does not care about the result. This
+	// prevents log spam from unexpected responses.
+	if onResponse == nil {
+		onResponse = func(_ easyjson.RawMessage) {}
 	}
+
+	l.onResponse[id] = onResponse
+	l.rawWriteMsg(method, params, id)
 }
 
-func (l *languageServer) writeMsg(method string, params easyjson.RawMessage) {
+func (l *languageServer) writeNotification(method string, params easyjson.RawMessage) {
+	l.rawWriteMsg(method, params, -1)
+}
+
+// id will only be written to json if it is >= 0
+func (l *languageServer) rawWriteMsg(method string, params easyjson.RawMessage, id RequestID) {
 	if l.err != nil {
 		log.Printf("Attempt to write message while language server has error %s", l.err.Error())
 		return
 	}
 
+	// content.ID is not written if it is less than 0
 	content := JSONRPCHeader{
 		JSONRPC: "2.0",
+		ID:      id,
 		Method:  method,
 		Params:  params,
 	}
@@ -119,6 +129,9 @@ func (l *languageServer) writeMsg(method string, params easyjson.RawMessage) {
 		l.err = e
 		languageServerClosed <- l
 	}
+
+	// Uncomment to write the written request to stderr.
+	// marshalToWriter(content, os.Stderr)
 }
 
 func marshalToWriter(v easyjson.Marshaler, w io.Writer) (written int, err error) {
@@ -143,10 +156,12 @@ func toJSON(m easyjson.Marshaler) easyjson.RawMessage {
 
 func (l *languageServer) writeInitialize(initOpts easyjson.RawMessage) {
 	// Send input.
-	l.writeMsg("initialize", toJSON(LsInitializeParams{
+	l.writeRequest("initialize", toJSON(LsInitializeParams{
 		RootURI:               pathToURI(l.directory),
 		InitializationOptions: initOpts,
-	}))
+	}), func(json easyjson.RawMessage) {
+		log.Print("Got initialize response")
+	})
 }
 
 func (l *languageServer) stdoutReader() {
@@ -163,15 +178,12 @@ func (l *languageServer) stdoutReader() {
 		header.ID = -1
 		header.UnmarshalJSON(scanner.Bytes())
 		if header.ID >= 0 {
-			reply, has := l.onReply[header.ID]
-			if !has {
-				log.Printf("No handler for response id %d", header.ID)
+			if response, has := l.onResponse[header.ID]; has {
+				response(header.Params)
 			} else {
-				reply(header.Params)
+				log.Printf("No handler for response id %d", header.ID)
 			}
-
 		}
-		fmt.Printf("Got method %q\n", header.Method)
 	}
 
 	if scanner.Err() != nil {
