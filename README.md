@@ -1,3 +1,5 @@
+As a heads up, I'm not likely to work on this project anymore.
+
 # lspc
 
 lspc is a command-line client for the language server protocol ecosystem.
